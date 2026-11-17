@@ -52,9 +52,12 @@ worker. The auth mode says nothing about which renderer exists.
 A render that fails on every available renderer, or returns an unusable
 document (wrong final URL, empty, still loading), makes the page an unread
 `error` page. A challenge that neither renderer passes stays `blocked`. A
-rendered document over 1 MiB keeps its first 1 MiB, the same bound the direct
-crawl reads. The audit never audits the unrendered shell in its place, and paid
-calls are never retried automatically.
+rendered document over 4 MiB keeps its first 4 MiB, the same bound the direct
+crawl reads (heavy WordPress themes inline 1-2 MB of CSS ahead of the body, so
+a 1 MiB bound dropped the body entirely). The audit never audits the unrendered
+shell in its place. Paid calls are never retried automatically; the exception
+is a Context 429 (rate limit), which is not billed and is retried up to three
+times, honoring `Retry-After` or waiting 2s, 4s, 8s.
 
 ## Throttled Shopify storefronts
 

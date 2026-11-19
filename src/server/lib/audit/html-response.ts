@@ -1,6 +1,10 @@
 import type { Response as BrowserResponse } from "@cloudflare/workers-types";
 
-export const MAX_HTML_BYTES = 1024 * 1024;
+// Heavy WordPress/Avada pages inline 1-2 MB of CSS and scripts in the head, so
+// the body (h1, text, images, links) starts past the first MiB. The crawl
+// window sizes its in-flight pages from observed htmlBytes (crawl-window.ts),
+// so a larger cap raises memory only on sites that actually serve big pages.
+export const MAX_HTML_BYTES = 4 * 1024 * 1024;
 
 export async function readTextUpTo(
   response: Response | BrowserResponse,

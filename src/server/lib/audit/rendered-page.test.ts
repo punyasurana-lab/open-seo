@@ -72,6 +72,16 @@ describe("rendered page providers", () => {
     });
   });
 
+  it("keeps the body of a page whose inline CSS pushes it past 1 MiB", async () => {
+    const page =
+      "<html><head><title>Heavy</title><style>" +
+      "x".repeat(2 * 1024 * 1024) +
+      "</style></head><body><h1>Real heading</h1></body></html>";
+    browser.quickAction.mockResolvedValue(cloudflare(200, page));
+    const { html: rendered } = await render().page;
+    expect(rendered).toContain("<h1>Real heading</h1>");
+  });
+
   it.each([
     ["a bot challenge", cloudflare(200, "<title>Just a moment...</title>")],
     [
@@ -120,7 +130,7 @@ describe("rendered page providers", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("keeps the first 1 MiB of an oversized render, as the direct crawl does", async () => {
+  it("keeps the first MAX_HTML_BYTES of an oversized render, as the direct crawl does", async () => {
     const head = "<html><head><title>Big page</title></head><body>";
     browser.quickAction.mockResolvedValue(
       cloudflare(200, head + "x".repeat(MAX_HTML_BYTES)),
@@ -181,14 +191,14 @@ describe("rendered page providers", () => {
     expect(usage.contextCredits).toBe(1);
   });
 
-  it("fails once per provider without retrying, logging no provider payload", async () => {
+  it("fails once per provider without retrying a billable error, logging no provider payload", async () => {
     browser.quickAction.mockRejectedValue(
       new Error("private provider payload"),
     );
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(
-        new Response("private provider payload", { status: 429 }),
+        new Response("private provider payload", { status: 500 }),
       );
     const { page, usage } = render();
     await expect(page).rejects.toThrow("Unable to render");
@@ -199,6 +209,41 @@ describe("rendered page providers", () => {
     expect(JSON.stringify(vi.mocked(console.info).mock.calls)).not.toContain(
       "private provider payload",
     );
+  });
+
+  it("retries a Context rate limit (429, not billed) and uses the page once it clears", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi
+        .spyOn(globalThis, "fetch")
+        .mockImplementationOnce(async () => new Response("", { status: 429 }))
+        .mockImplementationOnce(async () => new Response("", { status: 429 }))
+        .mockImplementation(async () => context());
+      const { page, usage } = render({ contextFetch });
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(await page).toEqual({ html, status: null });
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      expect(usage.contextCredits).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("gives up after three rate-limit retries without charging a credit", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi
+        .spyOn(globalThis, "fetch")
+        .mockImplementation(async () => new Response("", { status: 429 }));
+      const { page, usage } = render({ contextFetch });
+      const rejected = expect(page).rejects.toThrow("Unable to render");
+      await vi.advanceTimersByTimeAsync(30_000);
+      await rejected;
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+      expect(usage.contextCredits).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("assumes one credit for a usable Context page that omits its usage", async () => {

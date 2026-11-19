@@ -113,6 +113,21 @@ async function renderWithCloudflare(
   }
 }
 
+const CONTEXT_RATE_LIMIT_RETRIES = 3;
+const CONTEXT_RETRY_BASE_MS = 2_000;
+const CONTEXT_RETRY_MAX_MS = 15_000;
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Retry-After (seconds) when Context sends one, else 2s, 4s, 8s; max 15s. */
+function contextRetryDelayMs(response: Response, retry: number) {
+  const retryAfter = Number(response.headers.get("retry-after"));
+  const ms =
+    Number.isFinite(retryAfter) && retryAfter > 0
+      ? retryAfter * 1000
+      : CONTEXT_RETRY_BASE_MS * 2 ** retry;
+  return Math.min(ms, CONTEXT_RETRY_MAX_MS);
+}
+
 async function renderWithContext(
   url: string,
   contextFetch: typeof fetch,
@@ -136,9 +151,23 @@ async function renderWithContext(
   let creditsUsed: number | null = null;
   let httpStatus: number | null = null;
   try {
-    const response = await contextFetch(endpoint, {
+    let response = await contextFetch(endpoint, {
       signal: AbortSignal.timeout(35_000),
     });
+    // 429 means Context's rate limit refused the request: it is not billed, so
+    // waiting and asking again costs nothing. Any other failure may have been
+    // billed and is never retried.
+    for (
+      let retry = 0;
+      response.status === 429 && retry < CONTEXT_RATE_LIMIT_RETRIES;
+      retry++
+    ) {
+      await response.body?.cancel();
+      await sleep(contextRetryDelayMs(response, retry));
+      response = await contextFetch(endpoint, {
+        signal: AbortSignal.timeout(35_000),
+      });
+    }
     httpStatus = response.status;
     const json = await readProviderJson(response);
     // Usage first: a rejected or partial document still cost a credit.
@@ -151,7 +180,7 @@ async function renderWithContext(
     html = usableHtml(url, data.metadata.finalUrl, data.html);
   } catch {
     // Provider bodies/errors can contain page data or credentials. Nothing
-    // raw is logged, and a paid call is never retried automatically.
+    // raw is logged, and a failure that may have been billed is not retried.
   }
   // Context charges one credit per scrape. Bill what it reports; only assume
   // one credit for a usable page that omits its usage, never for a failure.

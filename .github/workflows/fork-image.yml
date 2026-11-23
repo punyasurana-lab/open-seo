@@ -1,8 +1,8 @@
 name: Publish fork Docker image
 
-# Fork-only: builds deploy/docker/Dockerfile, pushes it to this fork's GHCR
-# namespace, then pings the Dokploy deploy webhook so the VPS pulls it.
-# Upstream's docker-image.yml is gated to every-app/open-seo and never runs here.
+# Fork-only: builds deploy/docker/Dockerfile and pushes it to this fork's GHCR
+# namespace so Dokploy can pull it. Upstream's docker-image.yml is gated to
+# every-app/open-seo and never runs here.
 
 on:
   push:
@@ -58,16 +58,3 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-      # Tells Dokploy to redeploy once the image is pushed; its compose pulls
-      # :latest (pull_policy: always). Skipped when the secret is unset.
-      - name: Trigger Dokploy deploy
-        env:
-          DOKPLOY_DEPLOY_WEBHOOK: ${{ secrets.DOKPLOY_DEPLOY_WEBHOOK }}
-        run: |
-          if [ -z "$DOKPLOY_DEPLOY_WEBHOOK" ]; then
-            echo "DOKPLOY_DEPLOY_WEBHOOK is not set; skipping deploy."
-            exit 0
-          fi
-          curl --fail-with-body --silent --show-error --max-time 30 \
-            -X POST "$DOKPLOY_DEPLOY_WEBHOOK"
